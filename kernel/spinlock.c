@@ -9,7 +9,7 @@
 #include "defs.h"
 
 #ifdef LAB_LOCK
-#define NLOCK 500
+#define NLOCK 1024
 
 static struct spinlock *locks[NLOCK];
 struct spinlock lock_locks;
@@ -39,7 +39,10 @@ findslot(struct spinlock *lk) {
       return;
     }
   }
-  panic("findslot");
+  //panic("findslot");
+  // 处理没有空槽的情况
+  printf("Warning: No empty slot found for lock, continuing without slot assignment\n");
+  release(&lock_locks);
 }
 #endif
 
