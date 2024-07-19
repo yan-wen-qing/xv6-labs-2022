@@ -12,7 +12,7 @@
 // * Do not use the buffer after calling brelse.
 // * Only one process at a time can use a buffer,
 //     so do not keep them longer than necessary.
-
+#define NBUCKET 13  // 可以根据需要选择适当的桶数
 
 #include "types.h"
 #include "param.h"
@@ -24,68 +24,77 @@
 #include "buf.h"
 
 struct {
-  struct spinlock lock;
-  struct buf buf[NBUF];
-
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
-  struct buf head;
+  struct spinlock lock;// 定义一个自旋锁，用于保护缓存的全局访问
+  // 定义一个缓冲区头部数组，大小为NBUCKET，用于缓存的管理T
+  struct buf head[NBUCKET];
+  struct buf hash[NBUCKET][NBUF]; // 定义一个哈希表，每个桶中包含NBUF个缓冲区
+  // 为每个桶定义一个自旋锁，用于保护该桶的访问
+  struct spinlock hashlock[NBUCKET];  
 } bcache;
 
 void
-binit(void)
+binit(void) // 初始化缓冲区缓存
 {
-  struct buf *b;
-
-  initlock(&bcache.lock, "bcache");
-
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+  struct buf *b; // 定义一个指向缓冲区结构的指针
+  initlock(&bcache.lock, "bcache"); // 初始化全局缓存锁
+  for (int i = 0; i < NBUCKET; i++) { // 遍历所有桶
+    initlock(&bcache.hashlock[i], "bcache"); // 初始化每个桶的自旋锁
+    // 创建缓冲区的双向链表
+    // 头部的前一个指针指向自身，形成环
+    bcache.head[i].prev = &bcache.head[i]; 
+    // 头部的下一个指针指向自身，形成环
+    bcache.head[i].next = &bcache.head[i]; 
+    // 遍历每个桶中的所有缓冲区
+    for(b = bcache.hash[i]; b < bcache.hash[i]+NBUF; b++){ 
+    // 缓冲区的下一个指针指向头部的下一个指针
+      b->next = bcache.head[i].next; 
+      b->prev = &bcache.head[i]; // 缓冲区的前一个指针指向头部
+      initsleeplock(&b->lock, "buffer"); // 初始化缓冲区的睡眠锁
+      // 头部下一个指针的前一个指针指向当前缓冲区
+      bcache.head[i].next->prev = b; 
+      bcache.head[i].next = b; // 头部的下一个指针指向当前缓冲区
+    }
   }
 }
+
+
 
 // Look through buffer cache for block on device dev.
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
 static struct buf*
-bget(uint dev, uint blockno)
+bget(uint dev, uint blockno) // 获取指定设备和块号的缓冲区
 {
-  struct buf *b;
+  struct buf *b; // 定义一个指向缓冲区结构的指针
 
-  acquire(&bcache.lock);
+  uint hashcode = blockno % NBUCKET; // 计算块号的哈希值，确定桶的位置
+  acquire(&bcache.hashlock[hashcode]); // 获取该桶的自旋锁
 
-  // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
-    if(b->dev == dev && b->blockno == blockno){
-      b->refcnt++;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
+  // 块是否已经被缓存？
+  for(b = bcache.head[hashcode].next; b != &bcache.head[hashcode]; b = b->next){
+    if(b->dev == dev && b->blockno == blockno){ // 如果找到匹配的设备和块号
+      b->refcnt++; // 增加引用计数
+      release(&bcache.hashlock[hashcode]); // 释放桶的自旋锁
+      acquiresleep(&b->lock); // 获取缓冲区的睡眠锁
+      return b; // 返回找到的缓冲区
     }
   }
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
+  // 未缓存
+  // 回收最近最少使用（LRU）的未使用缓冲区
+  for(b = bcache.head[hashcode].prev; b != &bcache.head[hashcode]; b = b->prev){
+    if(b->refcnt == 0) { // 找到引用计数为0的缓冲区
+      b->dev = dev; // 设置设备号
+      b->blockno = blockno; // 设置块号
+      b->valid = 0; // 标记缓冲区无效
+      b->refcnt = 1; // 设置引用计数为1
+      release(&bcache.hashlock[hashcode]); // 释放桶的自旋锁
+      acquiresleep(&b->lock); // 获取缓冲区的睡眠锁
+      return b; // 返回回收的缓冲区
     }
   }
-  panic("bget: no buffers");
+  release(&bcache.hashlock[hashcode]); // 释放桶的自旋锁
+  panic("bget: no buffers"); // 如果没有可用的缓冲区，触发panic
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -111,29 +120,30 @@ bwrite(struct buf *b)
   virtio_disk_rw(b, 1);
 }
 
-// Release a locked buffer.
-// Move to the head of the most-recently-used list.
+
 void
-brelse(struct buf *b)
+brelse(struct buf *b) // 释放缓冲区
 {
-  if(!holdingsleep(&b->lock))
-    panic("brelse");
+  if(!holdingsleep(&b->lock)) // 检查当前是否持有缓冲区的睡眠锁
+    panic("brelse"); // 如果没有持有锁，触发panic
 
-  releasesleep(&b->lock);
+  releasesleep(&b->lock); // 释放缓冲区的睡眠锁
 
-  acquire(&bcache.lock);
-  b->refcnt--;
-  if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+  uint hashcode = b->blockno % NBUCKET; // 计算块号的哈希值，确定桶的位置
+  acquire(&bcache.hashlock[hashcode]); // 获取该桶的自旋锁
+  b->refcnt--; // 减少引用计数
+  if (b->refcnt == 0) { // 如果引用计数为0
+    // 没有人在等待它
+    b->next->prev = b->prev; // 将当前缓冲区从链表中移除
+    b->prev->next = b->next; // 将当前缓冲区从链表中移除
+    b->next = bcache.head[hashcode].next; // 将当前缓冲区插入到桶的头部
+    b->prev = &bcache.head[hashcode]; // 将当前缓冲区插入到桶的头部
+    // 更新头部的下一个缓冲区的前一个指针
+    bcache.head[hashcode].next->prev = b; 
+    bcache.head[hashcode].next = b; // 更新头部的下一个指针
   }
-  
-  release(&bcache.lock);
+
+  release(&bcache.hashlock[hashcode]); // 释放桶的自旋锁
 }
 
 void
