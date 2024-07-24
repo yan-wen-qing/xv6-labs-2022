@@ -16,6 +16,37 @@
 #include "file.h"
 #include "fcntl.h"
 
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH];
+  char path[MAXPATH];
+  struct inode *ip;
+  int n;
+
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+
+  // create a new symlink, return with a locked inode
+  ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+      end_op();
+      return -1;
+  }
+
+  // write the target into the symlink's data block
+  if(writei(ip, 0, (uint64)target, 0, n) != n) {
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -352,7 +383,32 @@ sys_open(void)
   if(ip->type == T_DEVICE){
     f->type = FD_DEVICE;
     f->major = ip->major;
-  } else {
+  } 
+  if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+    int tolerate = 10;
+    while (ip->type == T_SYMLINK && tolerate > 0) {
+      if(readi(ip, 0, (uint64)path, 0, ip->size) != ip->size) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);
+      if((ip = namei(path)) == 0) {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      tolerate--;
+    }
+    // cycle symlink is not allowed
+    if (tolerate == 0) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+  
+  else {
     f->type = FD_INODE;
     f->off = 0;
   }
@@ -363,6 +419,7 @@ sys_open(void)
   if((omode & O_TRUNC) && ip->type == T_FILE){
     itrunc(ip);
   }
+
 
   iunlock(ip);
   end_op();
