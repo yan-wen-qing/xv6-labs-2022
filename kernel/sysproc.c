@@ -5,7 +5,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
-
+#include "sysinfo.h"
 uint64
 sys_exit(void)
 {
@@ -53,7 +53,7 @@ sys_sleep(void)
 {
   int n;
   uint ticks0;
-
+backtrace();
   argint(0, &n);
   if(n < 0)
     n = 0;
@@ -91,3 +91,67 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc* proc = myproc();
+  // re-store trapframe so that it can return to the interrupt code before.
+  *proc->trapframe = proc->saved_trapframe;
+  proc->have_return = 1; // true
+  return proc->trapframe->a0;
+}
+
+uint64
+sys_sigalarm(void)
+{
+  int ticks;
+  uint64 handler_va;
+
+  argint(0, &ticks);
+  argaddr(1, &handler_va);
+  struct proc* proc = myproc();
+  proc->alarm_interval = ticks;
+  proc->handler_va = handler_va;
+  proc->have_return = 1; // true
+  return 0;
+}
+
+uint64
+sys_trace(void)
+{
+  int mask;
+
+  argint(0, &mask);
+  if(mask<0)
+  return -1;
+  myproc()->syscall_trace|=mask;
+  //struct proc *p = myproc();
+  //p->mask = mask;
+  return 0;
+  }
+
+uint64
+sys_sysinfo(void)
+{
+  // user pointer to struct sysinfo
+  uint64 si_addr;
+
+  argaddr(0, &si_addr);
+  int nproc;
+  int freemem;
+
+  nproc = proc_not_unsed_num();
+  freemem = free_mem_num();
+
+  struct sysinfo sysinfo;
+  sysinfo.freemem = freemem;
+  sysinfo.nproc = nproc;
+
+  struct proc *p = myproc();
+  if (copyout(p->pagetable, si_addr, (char *)&sysinfo, sizeof(sysinfo)) < 0)
+    return -1;
+
+  return 0;
+}
+

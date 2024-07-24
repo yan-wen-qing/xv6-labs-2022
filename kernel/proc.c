@@ -145,7 +145,7 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+p->syscall_trace=0;
   return p;
 }
 
@@ -295,7 +295,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+// copy trace mask value
+  np->mask = p->mask;
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -309,7 +310,7 @@ fork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
-
+np->syscall_trace=p->syscall_trace;
   pid = np->pid;
 
   release(&np->lock);
@@ -680,4 +681,16 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// used by sysinfo
+int
+proc_not_unsed_num(void)
+{
+  int nproc = 0;
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    if (p->state != UNUSED)
+      nproc++;
+  }
+  return nproc;
 }

@@ -83,7 +83,17 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
 struct proc {
+// trace mask value
+  uint64 mask;
   struct spinlock lock;
+// the virtual address of alarm handler function in user page
+  uint64 handler_va;
+  int alarm_interval;
+  int passed_ticks;
+  // save registers so that we can re-store it when return to interrupted code.   
+  struct trapframe saved_trapframe;
+  // the bool value which show that is or not we have return from alarm handler.
+  int have_return;
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state
@@ -104,4 +114,5 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  uint64 syscall_trace;
 };

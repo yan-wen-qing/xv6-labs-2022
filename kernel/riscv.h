@@ -287,6 +287,7 @@ intr_get()
   return (x & SSTATUS_SIE) != 0;
 }
 
+
 static inline uint64
 r_sp()
 {

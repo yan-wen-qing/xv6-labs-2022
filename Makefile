@@ -106,7 +106,7 @@ endif
 
 ifdef KCSAN
 CFLAGS += -DKCSAN
-KCSANFLAG = -fsanitize=thread
+KCSANFLAG = -fsanitize=thread -fno-inline
 endif
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
@@ -172,6 +172,14 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 .PRECIOUS: %.o
 
 UPROGS=\
+$U/_alarmtest\
+$U/_sysinfotest\
+$U/_trace\
+        $U/_sleep\
+         $U/_pingpong\
+         $U/_primes\
+         $U/_find\
+         $U/_xargs\
 	$U/_cat\
 	$U/_echo\
 	$U/_forktest\
